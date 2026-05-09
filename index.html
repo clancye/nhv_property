@@ -254,6 +254,8 @@
       url.searchParams.set('select', '*');
       url.searchParams.set('limit', String(RESULT_LIMIT));
 
+      console.log('[supabase] GET', url.toString());
+
       const res = await fetch(url.toString(), {
         headers: {
           apikey: SUPABASE_ANON_KEY,
@@ -261,11 +263,16 @@
           Accept: 'application/json',
         },
       });
+      const text = await res.text();
+      let body;
+      try { body = JSON.parse(text); } catch { body = text; }
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Supabase ${res.status}: ${text}`);
+        console.error('[supabase] error', res.status, body);
+        const detail = (body && body.message) ? body.message : text;
+        throw new Error(`HTTP ${res.status} — ${detail}`);
       }
-      return res.json();
+      console.log('[supabase] ok', Array.isArray(body) ? `${body.length} rows` : body);
+      return body;
     }
 
     function renderDropdown(results, query) {
@@ -362,8 +369,14 @@
       } catch (err) {
         if (requestId !== activeRequestId) return;
         console.error(err);
-        setStatus('Could not reach the address database.', true);
-        renderDropdown([], '');
+        setStatus(err.message || 'Could not reach the address database.', true);
+        // Surface the error in the dropdown too, so it's visible
+        dropdown.innerHTML = '';
+        const item = document.createElement('div');
+        item.className = 'dropdown-item empty';
+        item.textContent = err.message || 'Request failed';
+        dropdown.appendChild(item);
+        dropdown.classList.add('open');
       }
     }, 180);
 
