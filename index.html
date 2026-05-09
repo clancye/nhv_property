@@ -83,7 +83,9 @@
       max-height: 280px;
       overflow-y: auto;
       box-shadow: 0 4px 16px rgba(0,0,0,0.06);
-      z-index: 1000;
+      /* Leaflet's control containers (.leaflet-top etc.) sit at z-index: 1000.
+         Bump the dropdown above them so the +/- buttons don't peek through. */
+      z-index: 1100;
       display: none;
     }
 
