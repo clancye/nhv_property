@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>New Haven Address Lookup</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    :root {
+      --bg: #fafafa;
+      --fg: #1a1a1a;
+      --muted: #6b6b6b;
+      --border: #e5e5e5;
+      --accent: #1a1a1a;
+      --error: #b91c1c;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      max-width: 720px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 48px 24px 16px;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      margin: 0 0 4px;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0 0 24px;
+    }
+
+    form {
+      display: flex;
+      gap: 8px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 14px;
+      font-size: 15px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--fg);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    button {
+      padding: 12px 20px;
+      font-size: 15px;
+      font-weight: 500;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    button:hover {
+      opacity: 0.85;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .status {
+      max-width: 720px;
+      width: 100%;
+      margin: 12px auto 0;
+      padding: 0 24px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 18px;
+    }
+
+    .status.error {
+      color: var(--error);
+    }
+
+    main {
+      max-width: 720px;
+      width: 100%;
+      margin: 16px auto 48px;
+      padding: 0 24px;
+      flex: 1;
+    }
+
+    #map {
+      width: 100%;
+      height: 500px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #eee;
+    }
+
+    footer {
+      text-align: center;
+      padding: 16px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    footer a {
+      color: var(--muted);
+    }
+
+    @media (max-width: 600px) {
+      header { padding: 32px 16px 12px; }
+      main { padding: 0 16px; margin-bottom: 32px; }
+      .status { padding: 0 16px; }
+      #map { height: 380px; }
+      form { flex-direction: column; }
+      h1 { font-size: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>New Haven Address Lookup</h1>
+    <p class="subtitle">Enter an address in New Haven, CT to view it on the map.</p>
+    <form id="search-form">
+      <input
+        type="text"
+        id="address"
+        placeholder="e.g. 165 Church St, New Haven, CT"
+        autocomplete="street-address"
+        required
+      />
+      <button type="submit" id="search-btn">Search</button>
+    </form>
+  </header>
+
+  <div class="status" id="status"></div>
+
+  <main>
+    <div id="map"></div>
+  </main>
+
+  <footer>
+    Map &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors
+  </footer>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    // New Haven, CT center
+    const NEW_HAVEN_CENTER = [41.3083, -72.9279];
+    const DEFAULT_ZOOM = 13;
+    const RESULT_ZOOM = 17;
+
+    // Bounding box around New Haven (left, top, right, bottom)
+    // Used to bias geocoder results to the city
+    const NH_VIEWBOX = '-73.0100,41.3700,-72.8500,41.2400';
+
+    const map = L.map('map').setView(NEW_HAVEN_CENTER, DEFAULT_ZOOM);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+
+    let currentMarker = null;
+
+    const form = document.getElementById('search-form');
+    const input = document.getElementById('address');
+    const button = document.getElementById('search-btn');
+    const statusEl = document.getElementById('status');
+
+    function setStatus(msg, isError = false) {
+      statusEl.textContent = msg;
+      statusEl.classList.toggle('error', isError);
+    }
+
+    async function geocode(query) {
+      // Append "New Haven, CT" if the user didn't include it
+      const lower = query.toLowerCase();
+      let q = query.trim();
+      if (!lower.includes('new haven')) {
+        q += ', New Haven, CT';
+      }
+
+      const url = new URL('https://nominatim.openstreetmap.org/search');
+      url.searchParams.set('q', q);
+      url.searchParams.set('format', 'json');
+      url.searchParams.set('limit', '1');
+      url.searchParams.set('viewbox', NH_VIEWBOX);
+      url.searchParams.set('bounded', '1');
+      url.searchParams.set('addressdetails', '1');
+
+      const res = await fetch(url.toString(), {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!res.ok) {
+        throw new Error('Geocoding service error');
+      }
+      const data = await res.json();
+      return data[0] || null;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = input.value.trim();
+      if (!query) return;
+
+      button.disabled = true;
+      setStatus('Searching…');
+
+      try {
+        const result = await geocode(query);
+        if (!result) {
+          setStatus('No match found in New Haven. Try a more specific address.', true);
+          return;
+        }
+
+        const lat = parseFloat(result.lat);
+        const lon = parseFloat(result.lon);
+
+        if (currentMarker) {
+          map.removeLayer(currentMarker);
+        }
+        currentMarker = L.marker([lat, lon])
+          .addTo(map)
+          .bindPopup(result.display_name)
+          .openPopup();
+
+        map.flyTo([lat, lon], RESULT_ZOOM, { duration: 1.2 });
+        setStatus(result.display_name);
+      } catch (err) {
+        console.error(err);
+        setStatus('Something went wrong. Please try again.', true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
