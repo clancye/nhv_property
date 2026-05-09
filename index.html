@@ -17,12 +17,11 @@
       --muted: #6b6b6b;
       --border: #e5e5e5;
       --accent: #1a1a1a;
+      --hover: #f1f1f1;
       --error: #b91c1c;
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     html, body {
       margin: 0;
@@ -59,13 +58,12 @@
       margin: 0 0 24px;
     }
 
-    form {
-      display: flex;
-      gap: 8px;
+    .search-wrap {
+      position: relative;
     }
 
     input[type="text"] {
-      flex: 1;
+      width: 100%;
       padding: 12px 14px;
       font-size: 15px;
       border: 1px solid var(--border);
@@ -80,25 +78,48 @@
       border-color: var(--accent);
     }
 
-    button {
-      padding: 12px 20px;
-      font-size: 15px;
-      font-weight: 500;
-      background: var(--accent);
-      color: #fff;
-      border: none;
+    .dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: #fff;
+      border: 1px solid var(--border);
       border-radius: 8px;
+      max-height: 280px;
+      overflow-y: auto;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+      z-index: 1000;
+      display: none;
+    }
+
+    .dropdown.open {
+      display: block;
+    }
+
+    .dropdown-item {
+      padding: 10px 14px;
+      font-size: 14px;
       cursor: pointer;
-      transition: opacity 0.15s;
+      border-bottom: 1px solid var(--border);
     }
 
-    button:hover {
-      opacity: 0.85;
+    .dropdown-item:last-child {
+      border-bottom: none;
     }
 
-    button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
+    .dropdown-item:hover,
+    .dropdown-item.active {
+      background: var(--hover);
+    }
+
+    .dropdown-item.empty {
+      color: var(--muted);
+      cursor: default;
+    }
+
+    .dropdown-item.empty:hover {
+      background: #fff;
     }
 
     .status {
@@ -147,7 +168,6 @@
       main { padding: 0 16px; margin-bottom: 32px; }
       .status { padding: 0 16px; }
       #map { height: 380px; }
-      form { flex-direction: column; }
       h1 { font-size: 20px; }
     }
   </style>
@@ -155,17 +175,18 @@
 <body>
   <header>
     <h1>New Haven Address Lookup</h1>
-    <p class="subtitle">Enter an address in New Haven, CT to view it on the map.</p>
-    <form id="search-form">
+    <p class="subtitle">Start typing an address to see matches from the community database.</p>
+
+    <div class="search-wrap">
       <input
         type="text"
         id="address"
-        placeholder="e.g. 165 Church St, New Haven, CT"
-        autocomplete="street-address"
-        required
+        placeholder="e.g. 165 Church St"
+        autocomplete="off"
+        spellcheck="false"
       />
-      <button type="submit" id="search-btn">Search</button>
-    </form>
+      <div class="dropdown" id="dropdown" role="listbox"></div>
+    </div>
   </header>
 
   <div class="status" id="status"></div>
@@ -184,17 +205,19 @@
     crossorigin=""
   ></script>
   <script>
-    // New Haven, CT center
+    // ---- Supabase config ----
+    const SUPABASE_URL = 'https://llbpuplxoeyctivvdbdp.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_RTyyw2Rdo47vL3jiq7c6gw_HflWeurD';
+    const TABLE = 'community_addresses';
+    const ADDRESS_COL = 'Address';
+    const RESULT_LIMIT = 10;
+
+    // ---- Map ----
     const NEW_HAVEN_CENTER = [41.3083, -72.9279];
     const DEFAULT_ZOOM = 13;
     const RESULT_ZOOM = 17;
 
-    // Bounding box around New Haven (left, top, right, bottom)
-    // Used to bias geocoder results to the city
-    const NH_VIEWBOX = '-73.0100,41.3700,-72.8500,41.2400';
-
     const map = L.map('map').setView(NEW_HAVEN_CENTER, DEFAULT_ZOOM);
-
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
@@ -202,75 +225,178 @@
 
     let currentMarker = null;
 
-    const form = document.getElementById('search-form');
+    // ---- DOM ----
     const input = document.getElementById('address');
-    const button = document.getElementById('search-btn');
+    const dropdown = document.getElementById('dropdown');
     const statusEl = document.getElementById('status');
 
+    let activeIndex = -1;
+    let currentResults = [];
+    let activeRequestId = 0;
+
     function setStatus(msg, isError = false) {
-      statusEl.textContent = msg;
+      statusEl.textContent = msg || '';
       statusEl.classList.toggle('error', isError);
     }
 
-    async function geocode(query) {
-      // Append "New Haven, CT" if the user didn't include it
-      const lower = query.toLowerCase();
-      let q = query.trim();
-      if (!lower.includes('new haven')) {
-        q += ', New Haven, CT';
-      }
-
-      const url = new URL('https://nominatim.openstreetmap.org/search');
-      url.searchParams.set('q', q);
-      url.searchParams.set('format', 'json');
-      url.searchParams.set('limit', '1');
-      url.searchParams.set('viewbox', NH_VIEWBOX);
-      url.searchParams.set('bounded', '1');
-      url.searchParams.set('addressdetails', '1');
-
-      const res = await fetch(url.toString(), {
-        headers: { 'Accept': 'application/json' },
-      });
-      if (!res.ok) {
-        throw new Error('Geocoding service error');
-      }
-      const data = await res.json();
-      return data[0] || null;
+    function debounce(fn, ms) {
+      let t;
+      return (...args) => {
+        clearTimeout(t);
+        t = setTimeout(() => fn(...args), ms);
+      };
     }
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const query = input.value.trim();
-      if (!query) return;
+    async function searchAddresses(query) {
+      const url = new URL(`${SUPABASE_URL}/rest/v1/${TABLE}`);
+      // PostgREST: ilike uses * as wildcard
+      url.searchParams.set(ADDRESS_COL, `ilike.*${query}*`);
+      url.searchParams.set('select', '*');
+      url.searchParams.set('limit', String(RESULT_LIMIT));
 
-      button.disabled = true;
-      setStatus('Searching…');
+      const res = await fetch(url.toString(), {
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          Accept: 'application/json',
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Supabase ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
 
+    function renderDropdown(results, query) {
+      dropdown.innerHTML = '';
+      activeIndex = -1;
+      currentResults = results;
+
+      if (!results || results.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'dropdown-item empty';
+        empty.textContent = query ? 'No matches' : '';
+        if (query) {
+          dropdown.appendChild(empty);
+          dropdown.classList.add('open');
+        } else {
+          dropdown.classList.remove('open');
+        }
+        return;
+      }
+
+      results.forEach((row, i) => {
+        const item = document.createElement('div');
+        item.className = 'dropdown-item';
+        item.role = 'option';
+        item.textContent = row[ADDRESS_COL] ?? '(no address)';
+        item.addEventListener('mousedown', (e) => {
+          // mousedown so it fires before input blur
+          e.preventDefault();
+          selectResult(i);
+        });
+        dropdown.appendChild(item);
+      });
+      dropdown.classList.add('open');
+    }
+
+    // Try common column-name conventions for coordinates
+    function extractLatLon(row) {
+      const latKeys = ['lat', 'Lat', 'latitude', 'Latitude', 'LATITUDE', 'y', 'Y'];
+      const lonKeys = ['lng', 'Lng', 'lon', 'Lon', 'long', 'Long', 'longitude', 'Longitude', 'LONGITUDE', 'x', 'X'];
+      let lat = null, lon = null;
+      for (const k of latKeys) if (row[k] != null) { lat = parseFloat(row[k]); break; }
+      for (const k of lonKeys) if (row[k] != null) { lon = parseFloat(row[k]); break; }
+      if (Number.isFinite(lat) && Number.isFinite(lon)) return [lat, lon];
+      return null;
+    }
+
+    function selectResult(index) {
+      const row = currentResults[index];
+      if (!row) return;
+
+      input.value = row[ADDRESS_COL] ?? '';
+      dropdown.classList.remove('open');
+
+      const coords = extractLatLon(row);
+      if (!coords) {
+        setStatus(
+          `Selected "${row[ADDRESS_COL]}", but no coordinates found in this row.`,
+          true
+        );
+        console.warn('Row has no recognizable lat/lon columns:', row);
+        return;
+      }
+
+      if (currentMarker) map.removeLayer(currentMarker);
+      currentMarker = L.marker(coords)
+        .addTo(map)
+        .bindPopup(row[ADDRESS_COL])
+        .openPopup();
+      map.flyTo(coords, RESULT_ZOOM, { duration: 1.2 });
+      setStatus(row[ADDRESS_COL]);
+    }
+
+    function setActive(index) {
+      const items = dropdown.querySelectorAll('.dropdown-item:not(.empty)');
+      items.forEach((el, i) => el.classList.toggle('active', i === index));
+      activeIndex = index;
+      if (items[index]) {
+        items[index].scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    const handleInput = debounce(async (query) => {
+      const requestId = ++activeRequestId;
+      if (!query) {
+        renderDropdown([], '');
+        setStatus('');
+        return;
+      }
       try {
-        const result = await geocode(query);
-        if (!result) {
-          setStatus('No match found in New Haven. Try a more specific address.', true);
-          return;
-        }
-
-        const lat = parseFloat(result.lat);
-        const lon = parseFloat(result.lon);
-
-        if (currentMarker) {
-          map.removeLayer(currentMarker);
-        }
-        currentMarker = L.marker([lat, lon])
-          .addTo(map)
-          .bindPopup(result.display_name)
-          .openPopup();
-
-        map.flyTo([lat, lon], RESULT_ZOOM, { duration: 1.2 });
-        setStatus(result.display_name);
+        const results = await searchAddresses(query);
+        if (requestId !== activeRequestId) return; // stale
+        renderDropdown(results, query);
+        setStatus('');
       } catch (err) {
+        if (requestId !== activeRequestId) return;
         console.error(err);
-        setStatus('Something went wrong. Please try again.', true);
-      } finally {
-        button.disabled = false;
+        setStatus('Could not reach the address database.', true);
+        renderDropdown([], '');
+      }
+    }, 180);
+
+    input.addEventListener('input', (e) => {
+      handleInput(e.target.value.trim());
+    });
+
+    input.addEventListener('keydown', (e) => {
+      const items = dropdown.querySelectorAll('.dropdown-item:not(.empty)');
+      if (!dropdown.classList.contains('open') || items.length === 0) return;
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActive((activeIndex + 1) % items.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActive((activeIndex - 1 + items.length) % items.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (activeIndex >= 0) selectResult(activeIndex);
+        else if (currentResults.length > 0) selectResult(0);
+      } else if (e.key === 'Escape') {
+        dropdown.classList.remove('open');
+      }
+    });
+
+    input.addEventListener('focus', () => {
+      if (currentResults.length > 0) dropdown.classList.add('open');
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.search-wrap')) {
+        dropdown.classList.remove('open');
       }
     });
   </script>
